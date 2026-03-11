@@ -193,7 +193,7 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
         with open(args.source_counts_pkl, "rb") as fh:
             source_counts = pickle.load(fh)
 
-    mitogenes = _load_mitogenes() if args.exclude_mitocarta else None
+    mitogenes = _load_mitogenes() if not args.exclude_mitocarta else None
 
     batch = []
     rows = []
