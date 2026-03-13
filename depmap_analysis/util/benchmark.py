@@ -512,6 +512,188 @@ def run_single(args: argparse.Namespace) -> None:
     )
 
 
+def load_explainers_for_plot(
+    expl_dir: str,
+    corr_bin_counts,
+    source_type: str = "all",
+    rand_types: Sequence[str] = ("norand", "randxswap", "randlabels"),
+    strict: bool = True,
+):
+    """Load explainer pickles from a user-provided directory.
+
+    Parameters
+    ----------
+    expl_dir : str
+        Directory containing files named as
+        ``bioexp_depmap_{source}_{rand}_{corr_lb}_{corr_ub}.pkl``.
+    corr_bin_counts : list
+        List of ``((corr_lb, corr_ub), count)`` tuples.
+    source_type : str
+        Source key in file names, e.g., ``all`` or ``db``.
+    rand_types : Sequence[str]
+        Rand variants to load.
+    strict : bool
+        If True, raise if any expected file is missing.
+
+    Returns
+    -------
+    dict
+        Mapping ``(source_type, rand_type, corr_lb, corr_ub) -> explainer``.
+    """
+    explainers = {}
+    missing = []
+
+    for rand_type in rand_types:
+        for (corr_lb, corr_ub), _ in corr_bin_counts:
+            stem = f"bioexp_depmap_{source_type}_{rand_type}_{corr_lb}_{corr_ub}"
+            fpath = os.path.join(expl_dir, stem + ".pkl")
+            key = (source_type, rand_type, corr_lb, corr_ub)
+            if not os.path.exists(fpath):
+                missing.append(fpath)
+                continue
+            with open(fpath, "rb") as fh:
+                explainers[key] = pickle.load(fh)
+
+    if missing and strict:
+        missing_preview = "\n".join(missing[:10])
+        raise FileNotFoundError(
+            f"Missing {len(missing)} explainer files under {expl_dir}. "
+            f"First missing files:\n{missing_preview}"
+        )
+    if missing and not strict:
+        logger.warning(
+            "Skipping %d missing explainer files under %s",
+            len(missing),
+            expl_dir,
+        )
+
+    return explainers
+
+
+def _pct_explained_non_mito(explainer, source_type: str) -> float:
+    """Compute percent explained among non-mito pairs for one explainer."""
+    stats_df = explainer.stats_df
+    non_mito = stats_df[stats_df["apriori_explained"] != True]
+    denom = len(non_mito)
+    if denom == 0:
+        return 0.0
+
+    if source_type == "all":
+        num_expl = int((non_mito["explained"] == True).sum())
+    else:
+        direct_mask = (
+            (non_mito["a_b"] == True)
+            | (non_mito["b_a"] == True)
+            | (non_mito["common_parent"] == True)
+        )
+        num_expl = int(direct_mask.sum())
+    return 100.0 * num_expl / denom
+
+
+def _curve_from_explainers(explainers: dict, source_type: str, rand_type: str):
+    pts = []
+    for (src, rnd, corr_lb, _corr_ub), explainer in explainers.items():
+        if src != source_type or rnd != rand_type:
+            continue
+        pts.append((corr_lb, _pct_explained_non_mito(explainer, source_type)))
+    pts.sort(key=lambda x: x[0])
+    if not pts:
+        return (), ()
+    xvals, yvals = zip(*pts)
+    return xvals, yvals
+
+
+def plot_two_pct_expl(
+    explainers_a: dict,
+    explainers_b: dict,
+    source_type: str = "all",
+    rand_type: str = "randxswap",
+    by_cutoff: Optional[float] = None,
+    label_a: str = "Set A",
+    label_b: str = "Set B",
+    figsize: Tuple[float, float] = (2.2, 2.2),
+    dpi: int = 200,
+):
+    """Plot two percent-explained curve sets from loaded explainers."""
+    from matplotlib import pyplot as plt
+
+    a_norand = _curve_from_explainers(explainers_a, source_type, "norand")
+    a_rand = _curve_from_explainers(explainers_a, source_type, rand_type)
+    b_norand = _curve_from_explainers(explainers_b, source_type, "norand")
+    b_rand = _curve_from_explainers(explainers_b, source_type, rand_type)
+
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+
+    if a_norand[0]:
+        ax.plot(*a_norand, label=label_a, color="b", linewidth=1.5)
+    if a_rand[0]:
+        ax.plot(*a_rand, label=f"{label_a} shuffled", color="b",
+                linestyle="--", linewidth=1.2)
+    if b_norand[0]:
+        ax.plot(*b_norand, label=label_b, color="r", linewidth=1.5)
+    if b_rand[0]:
+        ax.plot(*b_rand, label=f"{label_b} shuffled", color="r",
+                linestyle="--", linewidth=1.2)
+
+    ax.set_xlabel("abs(z-score) lower bound", fontsize=7)
+    ax.set_ylabel("Pct. Corrs Explained", fontsize=7)
+    ax.legend(loc="upper left", frameon=False, fontsize=5, handlelength=2)
+
+    if by_cutoff is not None:
+        ymin, ymax = ax.get_ylim()
+        ax.vlines(by_cutoff, ymin, ymax * 0.4, color="gray",
+                  linestyle="--", linewidth=1)
+        y_mid = (ymin + ymax * 0.4) / 2
+        ax.text(by_cutoff - 3, y_mid, "B-Y sig. cutoff", color="gray",
+                fontsize=6, ha="left", va="center")
+
+    ax.tick_params(axis="both", which="major", labelsize=7, length=3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.subplots_adjust(left=0.22, bottom=0.22)
+    return fig, ax
+
+
+def plot_two_pct_expl_from_dirs(
+    expl_dir_a: str,
+    expl_dir_b: str,
+    corr_bin_counts,
+    source_type: str = "all",
+    rand_type: str = "randxswap",
+    strict: bool = True,
+    by_cutoff: Optional[float] = None,
+    label_a: str = "Set A",
+    label_b: str = "Set B",
+    figsize: Tuple[float, float] = (2.2, 2.2),
+    dpi: int = 200,
+):
+    """Load two explainer sets from custom directories and plot in one call."""
+    explainers_a = load_explainers_for_plot(
+        expl_dir_a,
+        corr_bin_counts=corr_bin_counts,
+        source_type=source_type,
+        rand_types=("norand", rand_type),
+        strict=strict,
+    )
+    explainers_b = load_explainers_for_plot(
+        expl_dir_b,
+        corr_bin_counts=corr_bin_counts,
+        source_type=source_type,
+        rand_types=("norand", rand_type),
+        strict=strict,
+    )
+    return plot_two_pct_expl(
+        explainers_a=explainers_a,
+        explainers_b=explainers_b,
+        source_type=source_type,
+        rand_type=rand_type,
+        by_cutoff=by_cutoff,
+        label_a=label_a,
+        label_b=label_b,
+        figsize=figsize,
+        dpi=dpi,
+    )
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Split depmap scratch into env-specific commands."
