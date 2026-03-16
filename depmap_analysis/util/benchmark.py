@@ -82,15 +82,14 @@ def _extract_stmts(loaded_obj):
 
 def filter_stmts(
     stmts,
-    genes_only: bool = True,
+    genes_only: bool = False,
     human_only: bool = True,
     require_named_agents: bool = True,
     require_two_agents: bool = False,
 ):
     from indra.tools import assemble_corpus as ac
 
-    if genes_only:
-        stmts = ac.filter_genes_only(stmts)
+    stmts = ac.filter_genes_only(stmts, specific_only=genes_only)
     if human_only:
         stmts = ac.filter_human_only(stmts)
     if require_named_agents:
@@ -193,7 +192,7 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
         with open(args.source_counts_pkl, "rb") as fh:
             source_counts = pickle.load(fh)
 
-    mitogenes = _load_mitogenes() if not args.exclude_mitocarta else None
+    mitogenes = _load_mitogenes() if args.exclude_mitocarta else None
 
     batch = []
     rows = []
@@ -721,11 +720,11 @@ def make_parser() -> argparse.ArgumentParser:
     p_norand.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     p_norand.add_argument("--source-type", default="all")
     p_norand.add_argument("--output-file", default=None)
-    p_norand.add_argument("--genes-only", action=argparse.BooleanOptionalAction, default=False) #
+    p_norand.add_argument("--genes-only", action=argparse.BooleanOptionalAction, default=False)
     p_norand.add_argument("--human-only", action=argparse.BooleanOptionalAction, default=True)
     p_norand.add_argument("--require-named-agents", action=argparse.BooleanOptionalAction, default=True)
     p_norand.add_argument("--require-two-agents", action=argparse.BooleanOptionalAction, default=False)
-    p_norand.add_argument("--exclude-mitocarta", action=argparse.BooleanOptionalAction, default=True)
+    p_norand.add_argument("--exclude-mitocarta", action=argparse.BooleanOptionalAction, default=False)
     p_norand.add_argument("--complex-members", type=int, default=3)
     p_norand.add_argument("--indra-date", default="20220802")
     p_norand.set_defaults(func=build_norand)
