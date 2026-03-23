@@ -60,22 +60,8 @@ SIF_COL_NAMES = [
 ]
 
 
-def inet_filename(source_type: str, rand_type: str) -> str:
+def inet_filename(source_type, rand_type):
     return f"bioexp_depmap_{source_type}_stmts_{rand_type}_inet.pkl"
-
-
-def _extract_stmts(loaded_obj):
-    """Handle a few common statement-pickle shapes."""
-    if isinstance(loaded_obj, list):
-        return loaded_obj
-    if isinstance(loaded_obj, tuple) and loaded_obj and isinstance(loaded_obj[0], list):
-        return loaded_obj[0]
-    if isinstance(loaded_obj, dict) and isinstance(loaded_obj.get("statements"), list):
-        return loaded_obj["statements"]
-    raise ValueError(
-        "Could not parse statement input. Expected list[Statement], "
-        "(list[Statement], ...), or {'statements': [...]}"
-    )
 
 
 def filter_stmts(
@@ -101,14 +87,14 @@ def filter_stmts(
     return stmts
 
 
-def _load_mitogenes() -> list[str]:
+def _load_mitogenes():
     from depmap_analysis.scripts.depmap_script2 import mito_file
 
     mitocarta = pd.read_excel(mito_file, sheet_name=1)
     return list(mitocarta.Symbol.values)
 
 
-def apply_mitocarta_exclusion(stmts, mitogenes: Sequence[str]):
+def apply_mitocarta_exclusion(stmts, mitogenes):
     from indra.tools import assemble_corpus as ac
 
     return ac.filter_gene_list(stmts, mitogenes, policy="all", invert=True)
@@ -117,7 +103,7 @@ def apply_mitocarta_exclusion(stmts, mitogenes: Sequence[str]):
 def _filter_and_rows_from_batch(
     batch,
     source_counts,
-    mitogenes: Optional[Sequence[str]],
+    mitogenes,
 ):
     from indra.assemblers.indranet import statement_to_rows
 
@@ -143,14 +129,13 @@ def _filter_and_rows_from_batch(
     return filtered, rows
 
 
-def _build_norand_from_stmts(args: argparse.Namespace, out_file: str) -> None:
+def _build_norand_from_stmts(args: argparse.Namespace, out_file):
     from indra.tools import assemble_corpus as ac
     from indra.assemblers.indranet import IndraNetAssembler
     from depmap_analysis.network_functions.net_functions import sif_dump_df_to_digraph
 
     logger.info("Loading statements from %s", args.input_stmts)
-    loaded = ac.load_statements(args.input_stmts)
-    stmts = _extract_stmts(loaded)
+    stmts = ac.load_statements(args.input_stmts)
     logger.info("Loaded %d statements", len(stmts))
 
     before = len(stmts)
@@ -173,7 +158,7 @@ def _build_norand_from_stmts(args: argparse.Namespace, out_file: str) -> None:
     logger.info("Saved norand inet -> %s", out_file)
 
 
-def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> None:
+def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file):
     from indra.statements import stmt_from_json
     from depmap_analysis.network_functions.net_functions import sif_dump_df_to_digraph
 
@@ -207,7 +192,6 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
                 stmt_json = clean_json_loads(stmt_json_str)
                 stmt = stmt_from_json(stmt_json)
                 if source_counts is not None:
-                    # Keep memory lower for this path; evidence_count comes from source_counts.
                     stmt.evidence = []
                 batch.append(stmt)
                 parsed += 1
@@ -248,7 +232,7 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
     logger.info("Saved norand inet -> %s", out_file)
 
 
-def build_norand(args: argparse.Namespace) -> None:
+def build_norand(args: argparse.Namespace):
     os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
     out_file = os.path.join(
         DEFAULT_OUTPUT_DIR, inet_filename("all", "norand")
@@ -305,7 +289,7 @@ def shuffle_labels(net, seed: int = 1):
     return shuffled
 
 
-def build_inets(args: argparse.Namespace) -> None:
+def build_inets():
     source_type = "all"
     norand_file = os.path.join(
         DEFAULT_OUTPUT_DIR, inet_filename(source_type, "norand")
@@ -337,7 +321,7 @@ def build_inets(args: argparse.Namespace) -> None:
     logger.info("Saved randxswap -> %s", randxswap_file)
 
 
-def get_corr_bins(lower: float, upper: float, n_points: int) -> list[Tuple[float, Optional[float]]]:
+def get_corr_bins(lower, upper, n_points):
     corr_range = np.linspace(lower, upper, n_points)
     corr_bins = []
     for ix in range(len(corr_range)):
@@ -348,11 +332,11 @@ def get_corr_bins(lower: float, upper: float, n_points: int) -> list[Tuple[float
 
 
 def load_or_calc_corr_bin_counts(
-    depmap_corr_file: str,
-    corr_bin_ct_file: str,
-    corr_bins: Sequence[Tuple[float, Optional[float]]],
-    recalculate: bool,
-) -> list[Tuple[Tuple[float, Optional[float]], int]]:
+    depmap_corr_file,
+    corr_bin_ct_file,
+    corr_bins,
+    recalculate,
+):
     from depmap_analysis.network_functions.depmap_network_functions import get_pairs
 
     if not recalculate and os.path.exists(corr_bin_ct_file):
@@ -379,16 +363,16 @@ def load_or_calc_corr_bin_counts(
 
 
 def run_depmap_wrapper(
-    inet_file: str,
-    output_file: str,
-    sd_range: Tuple[float, Optional[float]],
-    count: int,
-    depmap_corr_file: str,
-    reactome_file: str,
-    depmap_date: str,
-    expl_funcs: Sequence[str],
-    max_pairs: int,
-) -> None:
+    inet_file,
+    output_file,
+    sd_range,
+    count,
+    depmap_corr_file,
+    reactome_file,
+    depmap_date,
+    expl_funcs,
+    max_pairs,
+):
     from depmap_analysis.scripts.depmap_script2 import main as run_depmap
     from depmap_analysis.scripts.depmap_script2 import mito_file
 
@@ -410,10 +394,10 @@ def run_depmap_wrapper(
 
 
 def iter_expl_jobs(
-    source_types: Iterable[str],
-    rand_types: Iterable[str],
-    corr_bin_counts: Sequence[Tuple[Tuple[float, Optional[float]], int]],
-    output_dir: str,
+    source_types,
+    rand_types,
+    corr_bin_counts,
+    output_dir,
 ):
     for source_type in source_types:
         for rand_type in rand_types:
@@ -424,7 +408,7 @@ def iter_expl_jobs(
                 yield (source_type, rand_type, corr_lb, corr_ub, count, inet_file, output_file)
 
 
-def run_depmap_phase(args: argparse.Namespace) -> None:
+def run_depmap_phase() -> None:
     source_types = ["all"]
     rand_types = ["norand", "randxswap", "randlabels"]
 
@@ -553,7 +537,7 @@ def load_explainers_for_plot(
     return explainers
 
 
-def _pct_explained_non_mito(explainer, source_type: str) -> float:
+def _pct_explained_non_mito(explainer, source_type):
     """Compute percent explained among non-mito pairs for one explainer."""
     stats_df = explainer.stats_df
     non_mito = stats_df[stats_df["apriori_explained"] != True]
@@ -573,7 +557,7 @@ def _pct_explained_non_mito(explainer, source_type: str) -> float:
     return 100.0 * num_expl / denom
 
 
-def _curve_from_explainers(explainers: dict, source_type: str, rand_type: str):
+def _curve_from_explainers(explainers, source_type, rand_type):
     pts = []
     for (src, rnd, corr_lb, _corr_ub), explainer in explainers.items():
         if src != source_type or rnd != rand_type:
