@@ -1,18 +1,20 @@
-"""DepMap scratch workflow split into runnable commands.
+"""DepMap workflow
 
 Typical flow:
-  1) Build base norand inet from statements (gene-filtered):
-     python scratch.py build-norand --input-stmts /path/to/stmts.pkl --source-type all
+  1) Build base norand inet by streaming unique statements TSV:
+     python benchmark.py build-norand --input-unique-stmts /path/to/unique_statements.tsv.gz \
+         --source-counts-pkl /path/to/source_counts.pkl
 
-  1b) Build base norand inet by streaming unique statements TSV:
-     python scratch.py build-norand --input-unique-stmts /path/to/unique_statements.tsv.gz \
-         --source-counts-pkl /path/to/source_counts.pkl --source-type all
-
-  2) Build shuffled inet files (requires xswap, e.g., Python 3.9):
-     python scratch.py build-inets --source-type all
+  2) Build shuffled inet files (xswap needs Python 3.9):
+     python benchmark.py build-inets
 
   3) Run DepMap explanation benchmark (can run in Python 3.12):
-     python scratch.py run-depmap --source-types all --rand-types norand,randxswap,randlabels
+     python benchmark.py run-depmap
+
+  4) Run one single depmap job directly:
+     python benchmark.py run-single --inet-file /path/to/inet.pkl \
+         --depmap-corr-file /path/to/dep_z.h5 --output-file /path/to/out \
+         --sd-lower 3.0 --reactome-file /path/to/reactome_pathways.pkl
 """
 
 import argparse
@@ -22,7 +24,7 @@ import logging
 import os
 import pickle
 import random
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -62,10 +64,6 @@ def inet_filename(source_type: str, rand_type: str) -> str:
     return f"bioexp_depmap_{source_type}_stmts_{rand_type}_inet.pkl"
 
 
-def parse_csv_arg(arg: str) -> List[str]:
-    return [item.strip() for item in arg.split(",") if item.strip()]
-
-
 def _extract_stmts(loaded_obj):
     """Handle a few common statement-pickle shapes."""
     if isinstance(loaded_obj, list):
@@ -103,7 +101,7 @@ def filter_stmts(
     return stmts
 
 
-def _load_mitogenes() -> List[str]:
+def _load_mitogenes() -> list[str]:
     from depmap_analysis.scripts.depmap_script2 import mito_file
 
     mitocarta = pd.read_excel(mito_file, sheet_name=1)
@@ -118,7 +116,6 @@ def apply_mitocarta_exclusion(stmts, mitogenes: Sequence[str]):
 
 def _filter_and_rows_from_batch(
     batch,
-    args: argparse.Namespace,
     source_counts,
     mitogenes: Optional[Sequence[str]],
 ):
@@ -126,10 +123,10 @@ def _filter_and_rows_from_batch(
 
     filtered = filter_stmts(
         batch,
-        genes_only=args.genes_only,
-        human_only=args.human_only,
-        require_named_agents=args.require_named_agents,
-        require_two_agents=args.require_two_agents,
+        genes_only=False,
+        human_only=True,
+        require_named_agents=True,
+        require_two_agents=False,
     )
     if mitogenes is not None:
         filtered = apply_mitocarta_exclusion(filtered, mitogenes)
@@ -139,7 +136,7 @@ def _filter_and_rows_from_batch(
         rows.extend(
             statement_to_rows(
                 stmt,
-                complex_members=args.complex_members,
+                complex_members=3,
                 source_counts=source_counts,
             )
         )
@@ -159,23 +156,17 @@ def _build_norand_from_stmts(args: argparse.Namespace, out_file: str) -> None:
     before = len(stmts)
     stmts = filter_stmts(
         stmts,
-        genes_only=args.genes_only,
-        human_only=args.human_only,
-        require_named_agents=args.require_named_agents,
-        require_two_agents=args.require_two_agents,
+        genes_only=False,
+        human_only=True,
+        require_named_agents=True,
+        require_two_agents=False,
     )
     logger.info("After filters: %d -> %d", before, len(stmts))
 
-    if args.exclude_mitocarta:
-        mitogenes = _load_mitogenes()
-        pre_mito = len(stmts)
-        stmts = apply_mitocarta_exclusion(stmts, mitogenes)
-        logger.info("After MitoCarta exclusion: %d -> %d", pre_mito, len(stmts))
-
     logger.info("Assembling norand inet")
     ina = IndraNetAssembler(statements=stmts)
-    sif_df = ina.make_df(complex_members=args.complex_members)
-    inet = sif_dump_df_to_digraph(df=sif_df, date=args.indra_date)
+    sif_df = ina.make_df(complex_members=3)
+    inet = sif_dump_df_to_digraph(df=sif_df, date="20220802")
 
     with open(out_file, "wb") as fh:
         pickle.dump(inet, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -192,7 +183,7 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
         with open(args.source_counts_pkl, "rb") as fh:
             source_counts = pickle.load(fh)
 
-    mitogenes = _load_mitogenes() if args.exclude_mitocarta else None
+    mitogenes = None
 
     batch = []
     rows = []
@@ -205,8 +196,6 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
     with gzip.open(args.input_unique_stmts, "rt") as fi:
         reader = csv.reader(fi, delimiter="\t")
         for row in reader:
-            if args.max_unique_rows and total >= args.max_unique_rows:
-                break
             total += 1
 
             if not row:
@@ -226,9 +215,9 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
                 skipped += 1
                 continue
 
-            if len(batch) >= args.batch_size:
+            if len(batch) >= 100000:
                 filtered, batch_rows = _filter_and_rows_from_batch(
-                    batch, args=args, source_counts=source_counts, mitogenes=mitogenes
+                    batch, source_counts=source_counts, mitogenes=mitogenes
                 )
                 kept += len(filtered)
                 rows.extend(batch_rows)
@@ -236,7 +225,7 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
 
     if batch:
         filtered, batch_rows = _filter_and_rows_from_batch(
-            batch, args=args, source_counts=source_counts, mitogenes=mitogenes
+            batch, source_counts=source_counts, mitogenes=mitogenes
         )
         kept += len(filtered)
         rows.extend(batch_rows)
@@ -252,7 +241,7 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
 
     logger.info("Converting rows to DataFrame and building norand inet")
     sif_df = pd.DataFrame(rows, columns=SIF_COL_NAMES, dtype=object)
-    inet = sif_dump_df_to_digraph(df=sif_df, date=args.indra_date)
+    inet = sif_dump_df_to_digraph(df=sif_df, date="20220802")
 
     with open(out_file, "wb") as fh:
         pickle.dump(inet, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -260,15 +249,11 @@ def _build_norand_from_unique_tsv(args: argparse.Namespace, out_file: str) -> No
 
 
 def build_norand(args: argparse.Namespace) -> None:
-    os.makedirs(args.output_dir, exist_ok=True)
-    out_file = args.output_file or os.path.join(
-        args.output_dir, inet_filename(args.source_type, "norand")
+    os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+    out_file = os.path.join(
+        DEFAULT_OUTPUT_DIR, inet_filename("all", "norand")
     )
-
-    if args.input_unique_stmts:
-        _build_norand_from_unique_tsv(args, out_file)
-    else:
-        _build_norand_from_stmts(args, out_file)
+    _build_norand_from_unique_tsv(args, out_file)
 
 
 def shuffle_xswap(net, seed: int = 1):
@@ -321,30 +306,30 @@ def shuffle_labels(net, seed: int = 1):
 
 
 def build_inets(args: argparse.Namespace) -> None:
-    source_type = args.source_type
-    norand_file = args.norand_file or os.path.join(
-        args.output_dir, inet_filename(source_type, "norand")
+    source_type = "all"
+    norand_file = os.path.join(
+        DEFAULT_OUTPUT_DIR, inet_filename(source_type, "norand")
     )
     randxswap_file = os.path.join(
-        args.output_dir, inet_filename(source_type, "randxswap")
+        DEFAULT_OUTPUT_DIR, inet_filename(source_type, "randxswap")
     )
     randlabels_file = os.path.join(
-        args.output_dir, inet_filename(source_type, "randlabels")
+        DEFAULT_OUTPUT_DIR, inet_filename(source_type, "randlabels")
     )
 
     logger.info("Loading base inet: %s", norand_file)
     with open(norand_file, "rb") as fh:
         inet = pickle.load(fh)
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
 
     logger.info("Building randlabels inet")
-    randlabels_inet = shuffle_labels(inet, seed=args.seed)
+    randlabels_inet = shuffle_labels(inet, seed=1)
     with open(randlabels_file, "wb") as fh:
         pickle.dump(randlabels_inet, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
     logger.info("Building randxswap inet")
-    randxswap_inet = shuffle_xswap(inet, seed=args.seed)
+    randxswap_inet = shuffle_xswap(inet, seed=1)
     with open(randxswap_file, "wb") as fh:
         pickle.dump(randxswap_inet, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -352,7 +337,7 @@ def build_inets(args: argparse.Namespace) -> None:
     logger.info("Saved randxswap -> %s", randxswap_file)
 
 
-def get_corr_bins(lower: float, upper: float, n_points: int) -> List[Tuple[float, Optional[float]]]:
+def get_corr_bins(lower: float, upper: float, n_points: int) -> list[Tuple[float, Optional[float]]]:
     corr_range = np.linspace(lower, upper, n_points)
     corr_bins = []
     for ix in range(len(corr_range)):
@@ -367,7 +352,7 @@ def load_or_calc_corr_bin_counts(
     corr_bin_ct_file: str,
     corr_bins: Sequence[Tuple[float, Optional[float]]],
     recalculate: bool,
-) -> List[Tuple[Tuple[float, Optional[float]], int]]:
+) -> list[Tuple[Tuple[float, Optional[float]], int]]:
     from depmap_analysis.network_functions.depmap_network_functions import get_pairs
 
     if not recalculate and os.path.exists(corr_bin_ct_file):
@@ -440,27 +425,27 @@ def iter_expl_jobs(
 
 
 def run_depmap_phase(args: argparse.Namespace) -> None:
-    source_types = parse_csv_arg(args.source_types)
-    rand_types = parse_csv_arg(args.rand_types)
+    source_types = ["all"]
+    rand_types = ["norand", "randxswap", "randlabels"]
 
-    depmap_corr_file = args.depmap_corr_file or os.path.join(args.output_dir, "dep_z.h5")
-    corr_bin_ct_file = args.corr_bin_count_file or os.path.join(args.output_dir, "dep_corr_bin_counts.pkl")
-    reactome_file = args.reactome_file or os.path.join(args.output_dir, "reactome_pathways.pkl")
-    os.makedirs(os.path.join(args.output_dir, "expl"), exist_ok=True)
+    depmap_corr_file = os.path.join(DEFAULT_OUTPUT_DIR, "dep_z.h5")
+    corr_bin_ct_file = os.path.join(DEFAULT_OUTPUT_DIR, "dep_corr_bin_counts.pkl")
+    reactome_file = os.path.join(DEFAULT_OUTPUT_DIR, "reactome_pathways.pkl")
+    os.makedirs(os.path.join(DEFAULT_OUTPUT_DIR, "expl"), exist_ok=True)
 
-    corr_bins = get_corr_bins(args.corr_lower, args.corr_upper, args.corr_points)
+    corr_bins = get_corr_bins(0.0, 16.0, 33)
     corr_bin_counts = load_or_calc_corr_bin_counts(
         depmap_corr_file=depmap_corr_file,
         corr_bin_ct_file=corr_bin_ct_file,
         corr_bins=corr_bins,
-        recalculate=args.recalculate_corr_bins,
+        recalculate=False,
     )
 
     for source_type, rand_type, corr_lb, corr_ub, count, inet_file, output_file in iter_expl_jobs(
         source_types=source_types,
         rand_types=rand_types,
         corr_bin_counts=corr_bin_counts,
-        output_dir=args.output_dir,
+        output_dir=DEFAULT_OUTPUT_DIR,
     ):
         if not os.path.exists(inet_file):
             raise FileNotFoundError(
@@ -481,19 +466,18 @@ def run_depmap_phase(args: argparse.Namespace) -> None:
             count=count,
             depmap_corr_file=depmap_corr_file,
             reactome_file=reactome_file,
-            depmap_date=args.depmap_date,
-            expl_funcs=parse_csv_arg(args.expl_funcs),
-            max_pairs=args.max_pairs,
+            depmap_date="21q2",
+            expl_funcs=DEFAULT_EXPL_FUNCS,
+            max_pairs=1_000_000,
         )
 
 
 def run_single(args: argparse.Namespace) -> None:
-    """Run a single depmap job, matching the notebook-style call."""
+    """Run a single depmap job"""
     from depmap_analysis.scripts.depmap_script2 import main as run_depmap
     from depmap_analysis.scripts.depmap_script2 import mito_file
 
     sd_range = (args.sd_lower, args.sd_upper)
-    expl_funcs = parse_csv_arg(args.expl_funcs)
 
     run_depmap(
         args.inet_file,
@@ -501,13 +485,13 @@ def run_single(args: argparse.Namespace) -> None:
         args.output_file,
         "unsigned",
         sd_range,
-        sample_size=args.sample_size,
+        sample_size=None,
         apriori_explained=mito_file,
         reactome_path=args.reactome_file,
         overwrite=True,
-        depmap_date=args.depmap_date,
-        expl_funcs=expl_funcs,
-        n_chunks=args.n_chunks,
+        depmap_date="21q2",
+        expl_funcs=DEFAULT_EXPL_FUNCS,
+        n_chunks=1,
     )
 
 
@@ -518,7 +502,7 @@ def load_explainers_for_plot(
     rand_types: Sequence[str] = ("norand", "randxswap", "randlabels"),
     strict: bool = True,
 ):
-    """Load explainer pickles from a user-provided directory.
+    """Load explainer pickles from provided directory.
 
     Parameters
     ----------
@@ -666,7 +650,7 @@ def plot_two_pct_expl_from_dirs(
     figsize: Tuple[float, float] = (2.2, 2.2),
     dpi: int = 200,
 ):
-    """Load two explainer sets from custom directories and plot in one call."""
+    """Load two explainer sets from custom directories and plot."""
     explainers_a = load_explainers_for_plot(
         expl_dir_a,
         corr_bin_counts=corr_bin_counts,
@@ -701,61 +685,30 @@ def make_parser() -> argparse.ArgumentParser:
 
     p_norand = subparsers.add_parser(
         "build-norand",
-        help="Build base norand inet from statement input or streamed unique statements.",
+        help="Build base norand inet from streamed unique statements.",
     )
-    source_group = p_norand.add_mutually_exclusive_group(required=True)
-    source_group.add_argument(
-        "--input-stmts",
-        help="Input statement pickle/json path accepted by indra.tools.assemble_corpus.load_statements",
-    )
-    source_group.add_argument(
+    p_norand.add_argument(
         "--input-unique-stmts",
+        required=True,
         help="Path to unique_statements.tsv.gz to stream rows from.",
     )
-    p_norand.add_argument("--source-counts-pkl", default=None,
-                          help="Optional source_counts.pkl for unique-statements mode.")
-    p_norand.add_argument("--max-unique-rows", type=int, default=None,
-                          help="Optional cap on number of rows read from unique statements.")
-    p_norand.add_argument("--batch-size", type=int, default=100000)
-    p_norand.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    p_norand.add_argument("--source-type", default="all")
-    p_norand.add_argument("--output-file", default=None)
-    p_norand.add_argument("--genes-only", action=argparse.BooleanOptionalAction, default=False)
-    p_norand.add_argument("--human-only", action=argparse.BooleanOptionalAction, default=True)
-    p_norand.add_argument("--require-named-agents", action=argparse.BooleanOptionalAction, default=True)
-    p_norand.add_argument("--require-two-agents", action=argparse.BooleanOptionalAction, default=False)
-    p_norand.add_argument("--exclude-mitocarta", action=argparse.BooleanOptionalAction, default=False)
-    p_norand.add_argument("--complex-members", type=int, default=3)
-    p_norand.add_argument("--indra-date", default="20220802")
+    p_norand.add_argument(
+        "--source-counts-pkl",
+        required=True,
+        help="Path to source_counts.pkl used when streaming unique statements.",
+    )
     p_norand.set_defaults(func=build_norand)
 
     p_build = subparsers.add_parser(
         "build-inets",
         help="Build randxswap/randlabels inet files from a base norand inet (py3.9 + xswap).",
     )
-    p_build.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    p_build.add_argument("--source-type", default="all")
-    p_build.add_argument("--norand-file", default=None)
-    p_build.add_argument("--seed", type=int, default=1)
     p_build.set_defaults(func=build_inets)
 
     p_run = subparsers.add_parser(
         "run-depmap",
         help="Run depmap explanation benchmark from existing inet files (py3.12).",
     )
-    p_run.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    p_run.add_argument("--source-types", default="all")
-    p_run.add_argument("--rand-types", default="norand,randxswap,randlabels")
-    p_run.add_argument("--depmap-corr-file", default=None)
-    p_run.add_argument("--corr-bin-count-file", default=None)
-    p_run.add_argument("--reactome-file", default=None)
-    p_run.add_argument("--recalculate-corr-bins", action="store_true")
-    p_run.add_argument("--corr-lower", type=float, default=0.0)
-    p_run.add_argument("--corr-upper", type=float, default=16.0)
-    p_run.add_argument("--corr-points", type=int, default=33)
-    p_run.add_argument("--depmap-date", default="21q2")
-    p_run.add_argument("--max-pairs", type=int, default=1_000_000)
-    p_run.add_argument("--expl-funcs", default=",".join(DEFAULT_EXPL_FUNCS))
     p_run.set_defaults(func=run_depmap_phase)
 
     p_single = subparsers.add_parser(
@@ -767,11 +720,7 @@ def make_parser() -> argparse.ArgumentParser:
     p_single.add_argument("--output-file", required=True)
     p_single.add_argument("--sd-lower", type=float, required=True)
     p_single.add_argument("--sd-upper", type=float, default=None)
-    p_single.add_argument("--sample-size", type=int, default=None)
     p_single.add_argument("--reactome-file", required=True)
-    p_single.add_argument("--depmap-date", default="21q2")
-    p_single.add_argument("--expl-funcs", default=",".join(DEFAULT_EXPL_FUNCS))
-    p_single.add_argument("--n-chunks", type=int, default=1)
     p_single.set_defaults(func=run_single)
 
     return parser

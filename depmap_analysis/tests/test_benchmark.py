@@ -19,17 +19,8 @@ def test_inet_generation_from_synthetic_statements():
     st1.belief = 0.8
     st2.belief = 0.7
 
-    args = argparse.Namespace(
-        genes_only=False,
-        human_only=False,
-        require_named_agents=True,
-        require_two_agents=False,
-        complex_members=3,
-    )
-
     filtered, rows = bm._filter_and_rows_from_batch(
         [st1, st2],
-        args=args,
         source_counts=None,
         mitogenes=None,
     )
@@ -68,11 +59,7 @@ def test_run_single_invokes_run_depmap(monkeypatch):
         output_file="/tmp/out_expl",
         sd_lower=3.0,
         sd_upper=3.5,
-        sample_size=123,
         reactome_file="reactome.pkl",
-        depmap_date="21q2",
-        expl_funcs="expl_ab,expl_ba",
-        n_chunks=1,
     )
 
     bm.run_single(args)
@@ -84,10 +71,11 @@ def test_run_single_invokes_run_depmap(monkeypatch):
         "unsigned",
         (3.0, 3.5),
     )
-    assert captured["kwargs"]["sample_size"] == 123
+    assert captured["kwargs"]["sample_size"] is None
     assert captured["kwargs"]["apriori_explained"] == "fake_mito.tsv"
     assert captured["kwargs"]["reactome_path"] == "reactome.pkl"
     assert captured["kwargs"]["overwrite"] is True
     assert captured["kwargs"]["depmap_date"] == "21q2"
-    assert captured["kwargs"]["expl_funcs"] == ["expl_ab", "expl_ba"]
+    assert captured["kwargs"]["expl_funcs"] == bm.DEFAULT_EXPL_FUNCS
     assert captured["kwargs"]["n_chunks"] == 1
+
