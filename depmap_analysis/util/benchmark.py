@@ -1,5 +1,4 @@
-"""DepMap workflow
-
+"""
 Typical flow:
   1) Build base norand inet by streaming unique statements TSV:
      python benchmark.py build-norand --input-unique-stmts /path/to/unique_statements.tsv.gz \
